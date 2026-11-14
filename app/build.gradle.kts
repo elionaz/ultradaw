@@ -14,8 +14,8 @@ android {
         applicationId = "com.elionaz.ultradaw"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     // Release signing is read from keystore.properties (gitignored) at the project root.
@@ -42,6 +42,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true; buildConfig = true }
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 
 kotlin {

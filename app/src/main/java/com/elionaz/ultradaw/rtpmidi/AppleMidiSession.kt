@@ -1,5 +1,6 @@
 package com.elionaz.ultradaw.rtpmidi
 
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -10,26 +11,33 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.net.SocketException
-import android.util.Log
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
 sealed interface SessionState {
     data object Stopped : SessionState
     data class Listening(val port: Int) : SessionState
-    data class Connected(val peerName: String, val latencyMs: Double?) : SessionState
+    data class Connecting(val peerName: String) : SessionState
+    data class Connected(val peerName: String, val latencyMs: Double?, val address: InetAddress?) : SessionState
     data class Failed(val message: String) : SessionState
 }
 
+/** Why the last outgoing invitation did not end in a connection. */
+enum class InviteFailure { REJECTED, NO_ANSWER }
+
 /**
- * AppleMIDI session in responder role: macOS (Audio MIDI Setup → Network) invites us.
- * Control port = [controlPort], data port = controlPort + 1.
+ * AppleMIDI (macOS Network MIDI) session, single peer at a time.
  *
- * Single peer at a time; a new invitation replaces the previous peer.
+ * - Responder: macOS invites us (Audio MIDI Setup → Connect).
+ * - Initiator: we invite a Mac session found via Bonjour ([invite]); we then drive clock sync.
+ *
+ * Control port = [controlPort], data port = controlPort + 1.
  */
 class AppleMidiSession(
     private val name: String,
@@ -42,6 +50,8 @@ class AppleMidiSession(
         private const val TAG = "UltraDAW/Session"
         /** macOS re-syncs the clock every ~10 s once connected; treat 60 s of silence as gone. */
         private const val PEER_TIMEOUT_MS = 60_000L
+        private const val INVITE_ATTEMPTS = 8
+        private const val INVITE_RETRY_MS = 1_000L
     }
 
     private data class Peer(
@@ -49,23 +59,40 @@ class AppleMidiSession(
         val name: String,
         val control: SocketAddress,
         val data: SocketAddress?,
+        /** True when we invited the peer and therefore own clock synchronisation. */
+        val initiator: Boolean = false,
     )
+
+    /** Outgoing invitation in progress. stage 0 = control port, 1 = data port. */
+    private class Invite(val token: Int, val peerName: String, val control: InetSocketAddress) {
+        @Volatile var stage = 0
+        @Volatile var peerSsrc = 0
+        val data: InetSocketAddress get() = InetSocketAddress(control.address, control.port + 1)
+    }
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Stopped)
     val state: StateFlow<SessionState> = _state
+
+    private val _lastFailure = MutableStateFlow<InviteFailure?>(null)
+    /** Result of the last [invite] that failed; cleared on connection. */
+    val lastFailure: StateFlow<InviteFailure?> = _lastFailure
 
     private val ssrc = Random.nextInt()
     private val sequence = AtomicInteger(Random.nextInt(0, 0xFFFF))
     private val startNanos = System.nanoTime()
     private val sysex = SysexAssembler()
     private val sender = Executors.newSingleThreadExecutor { r -> Thread(r, "UltraDAW-send").apply { isDaemon = true } }
+    private val lock = Any()
 
     @Volatile private var control: DatagramSocket? = null
     @Volatile private var data: DatagramSocket? = null
     @Volatile private var peer: Peer? = null
+    @Volatile private var invite: Invite? = null
     @Volatile private var lastHeard = 0L
-    private var latencyMs: Double? = null
+    @Volatile private var lastReject = 0L
+    @Volatile private var latencyMs: Double? = null
     private val jobs = mutableListOf<Job>()
+    private var syncJob: Job? = null
 
     /** Clock in 100 µs units since session start, as AppleMIDI expects. */
     private fun now(): Long = (System.nanoTime() - startNanos) / 100_000
@@ -88,7 +115,11 @@ class AppleMidiSession(
 
     fun stop() {
         peer?.let { sendBye(it) }
-        peer = null
+        synchronized(lock) {
+            peer = null
+            invite = null
+        }
+        syncJob?.cancel()
         jobs.forEach { it.cancel() }
         jobs.clear()
         close()
@@ -96,6 +127,18 @@ class AppleMidiSession(
     }
 
     val isConnected: Boolean get() = peer?.data != null
+
+    /**
+     * Invites a remote session (e.g. a Mac found via Bonjour). No-op while connected or while
+     * another invitation is running. Progress is reported through [state] and [lastFailure].
+     */
+    fun invite(peerName: String, address: InetAddress, port: Int) {
+        if (control == null || isConnected || invite != null) return
+        val inv = Invite(Random.nextInt(), peerName, InetSocketAddress(address, port))
+        synchronized(lock) { invite = inv }
+        _state.value = SessionState.Connecting(peerName)
+        scope.launch(Dispatchers.IO) { runInvite(inv) }
+    }
 
     /**
      * Sends MIDI messages to the connected peer (no-op if nobody is connected).
@@ -129,6 +172,76 @@ class AppleMidiSession(
         data = null
     }
 
+    // ---- initiator ----
+
+    private suspend fun runInvite(inv: Invite) {
+        repeat(INVITE_ATTEMPTS) {
+            if (invite !== inv) return
+            val toData = inv.stage == 1
+            val socket = (if (toData) data else control) ?: return
+            val dest = if (toData) inv.data else inv.control
+            enqueue(socket, dest, AppleMidiPacket.Exchange(AppleMidiPacket.Command.IN, inv.token, ssrc, name))
+            delay(INVITE_RETRY_MS)
+        }
+        val gaveUp = synchronized(lock) {
+            if (invite === inv) { invite = null; true } else false
+        }
+        if (gaveUp) {
+            _lastFailure.value = InviteFailure.NO_ANSWER
+            if (!isConnected) _state.value = SessionState.Listening(controlPort)
+        }
+    }
+
+    private fun onInviteAccepted(pkt: AppleMidiPacket.Exchange, from: SocketAddress, isData: Boolean) {
+        val inv = invite ?: return
+        if (pkt.token != inv.token) return
+        if (!isData && inv.stage == 0) {
+            inv.peerSsrc = pkt.ssrc
+            inv.stage = 1
+            // Don't wait for the retry timer: invite the data port right away.
+            data?.let { enqueue(it, inv.data, AppleMidiPacket.Exchange(AppleMidiPacket.Command.IN, inv.token, ssrc, name)) }
+        } else if (isData && inv.stage == 1) {
+            val p = Peer(pkt.ssrc, inv.peerName, inv.control, from, initiator = true)
+            synchronized(lock) {
+                if (invite !== inv) return
+                invite = null
+                peer = p
+            }
+            lastHeard = System.currentTimeMillis()
+            latencyMs = null
+            _lastFailure.value = null
+            _state.value = SessionState.Connected(p.name, null, inv.control.address)
+            startClockSync(p)
+        }
+    }
+
+    private fun onInviteRejected(pkt: AppleMidiPacket.Exchange) {
+        val rejected = synchronized(lock) {
+            val inv = invite
+            if (inv != null && pkt.token == inv.token) { invite = null; true } else false
+        }
+        if (rejected) {
+            _lastFailure.value = InviteFailure.REJECTED
+            if (!isConnected) _state.value = SessionState.Listening(controlPort)
+        }
+    }
+
+    /** As initiator we must keep the clock in sync (a burst at first, then every 10 s). */
+    private fun startClockSync(p: Peer) {
+        syncJob?.cancel()
+        syncJob = scope.launch(Dispatchers.IO) {
+            var n = 0
+            while (isActive && peer?.ssrc == p.ssrc) {
+                val socket = data ?: break
+                val dest = p.data ?: break
+                enqueue(socket, dest, AppleMidiPacket.ClockSync(ssrc, 0, now(), 0, 0))
+                delay(if (n++ < 6) 1_500 else 10_000)
+            }
+        }
+    }
+
+    // ---- receive ----
+
     private suspend fun receiveLoop(socket: DatagramSocket, isData: Boolean) {
         val buf = ByteArray(4096)
         while (scope.isActive && !socket.isClosed) {
@@ -137,6 +250,9 @@ class AppleMidiSession(
                 socket.receive(packet)
             } catch (_: SocketException) {
                 break
+            } catch (e: Exception) {
+                Log.w(TAG, "receive", e)
+                continue
             }
             try {
                 handlePacket(buf, packet.length, packet.socketAddress, socket, isData)
@@ -167,8 +283,6 @@ class AppleMidiSession(
         return remoteSsrc == p.ssrc && p.data != null
     }
 
-    @Volatile private var lastReject = 0L
-
     private fun rejectStale(socket: DatagramSocket, to: SocketAddress) {
         val t = System.currentTimeMillis()
         if (t - lastReject < 1_000) return
@@ -179,54 +293,81 @@ class AppleMidiSession(
     private fun handleControl(pkt: AppleMidiPacket, from: SocketAddress, socket: DatagramSocket, isData: Boolean) {
         when (pkt) {
             is AppleMidiPacket.Exchange -> when (pkt.command) {
-                AppleMidiPacket.Command.IN -> {
-                    reply(socket, from, AppleMidiPacket.Exchange(AppleMidiPacket.Command.OK, pkt.token, ssrc, name))
-                    val current = peer
-                    peer = if (!isData) {
-                        Peer(pkt.ssrc, pkt.name ?: "Mac", from, null)
-                    } else {
-                        (current?.takeIf { it.ssrc == pkt.ssrc } ?: Peer(pkt.ssrc, pkt.name ?: "Mac", controlFor(from), null))
-                            .copy(data = from)
-                    }
-                    if (isData) _state.value = SessionState.Connected(peer!!.name, null)
-                }
-                AppleMidiPacket.Command.BY -> {
-                    if (peer?.ssrc == pkt.ssrc) disconnect()
-                }
-                AppleMidiPacket.Command.OK, AppleMidiPacket.Command.NO -> Unit // we never invite
+                AppleMidiPacket.Command.IN -> onInvited(pkt, from, socket, isData)
+                AppleMidiPacket.Command.OK -> onInviteAccepted(pkt, from, isData)
+                AppleMidiPacket.Command.NO -> onInviteRejected(pkt)
+                AppleMidiPacket.Command.BY -> if (peer?.ssrc == pkt.ssrc) disconnect()
             }
             is AppleMidiPacket.ClockSync -> when (pkt.count) {
                 0 -> reply(socket, from, pkt.copy(ssrc = ssrc, count = 1, ts2 = now()))
-                1 -> reply(socket, from, pkt.copy(ssrc = ssrc, count = 2, ts3 = now()))
-                2 -> {
-                    // Round trip measured by the initiator: ts3 - ts1, in 100 µs units.
-                    latencyMs = (pkt.ts3 - pkt.ts1) / 10.0
-                    val p = peer
-                    if (p?.data != null) _state.value = SessionState.Connected(p.name, latencyMs)
+                1 -> {
+                    val ts3 = now()
+                    reply(socket, from, pkt.copy(ssrc = ssrc, count = 2, ts3 = ts3))
+                    updateLatency((ts3 - pkt.ts1) / 10.0)
                 }
+                2 -> updateLatency((pkt.ts3 - pkt.ts1) / 10.0)
             }
             is AppleMidiPacket.ReceiverFeedback -> Unit
         }
+    }
+
+    /** Responder role: the Mac invites us. Accepting cancels any invitation we had running. */
+    private fun onInvited(pkt: AppleMidiPacket.Exchange, from: SocketAddress, socket: DatagramSocket, isData: Boolean) {
+        reply(socket, from, AppleMidiPacket.Exchange(AppleMidiPacket.Command.OK, pkt.token, ssrc, name))
+        val connected: Peer? = synchronized(lock) {
+            invite = null
+            val current = peer
+            peer = if (!isData) {
+                Peer(pkt.ssrc, pkt.name ?: "Mac", from, null)
+            } else {
+                (current?.takeIf { it.ssrc == pkt.ssrc } ?: Peer(pkt.ssrc, pkt.name ?: "Mac", controlFor(from), null))
+                    .copy(data = from)
+            }
+            peer?.takeIf { isData }
+        }
+        if (connected != null) {
+            syncJob?.cancel()
+            latencyMs = null
+            _lastFailure.value = null
+            _state.value = SessionState.Connected(connected.name, null, (from as? InetSocketAddress)?.address)
+        }
+    }
+
+    private fun updateLatency(ms: Double) {
+        latencyMs = ms
+        val st = _state.value
+        if (st is SessionState.Connected) _state.value = st.copy(latencyMs = ms)
     }
 
     /** The peer's control port is its data port − 1. */
     private fun controlFor(data: SocketAddress): SocketAddress =
         (data as? InetSocketAddress)?.let { InetSocketAddress(it.address, it.port - 1) } ?: data
 
-    private fun reply(socket: DatagramSocket, to: SocketAddress, pkt: AppleMidiPacket) {
+    private fun reply(socket: DatagramSocket, to: SocketAddress, pkt: AppleMidiPacket) = enqueue(socket, to, pkt)
+
+    private fun enqueue(socket: DatagramSocket, to: SocketAddress, pkt: AppleMidiPacket) {
         val bytes = AppleMidiPackets.encode(pkt)
-        runCatching { socket.send(DatagramPacket(bytes, bytes.size, to)) }
+        sender.execute {
+            try {
+                socket.send(DatagramPacket(bytes, bytes.size, to))
+            } catch (e: Exception) {
+                Log.w(TAG, "control send failed", e)
+            }
+        }
     }
 
     private fun sendBye(p: Peer) {
         val bye = AppleMidiPackets.encode(AppleMidiPacket.Exchange(AppleMidiPacket.Command.BY, 0, ssrc))
         val socket = control ?: return
         // stop() may run on the main thread; block briefly so BY leaves before sockets close.
-        runCatching { sender.submit { socket.send(DatagramPacket(bye, bye.size, p.control)) }.get(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        runCatching {
+            sender.submit { socket.send(DatagramPacket(bye, bye.size, p.control)) }.get(500, TimeUnit.MILLISECONDS)
+        }
     }
 
     private fun disconnect() {
-        peer = null
+        syncJob?.cancel()
+        synchronized(lock) { peer = null }
         latencyMs = null
         _state.value = SessionState.Listening(controlPort)
     }

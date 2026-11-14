@@ -8,6 +8,9 @@ import com.elionaz.ultradaw.mcu.McuParser
 import com.elionaz.ultradaw.mcu.SurfaceState
 import com.elionaz.ultradaw.rtpmidi.AppleMidiSession
 import com.elionaz.ultradaw.rtpmidi.BonjourAdvertiser
+import com.elionaz.ultradaw.rtpmidi.BonjourBrowser
+import com.elionaz.ultradaw.rtpmidi.InviteFailure
+import com.elionaz.ultradaw.rtpmidi.MidiService
 import com.elionaz.ultradaw.rtpmidi.SessionState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +27,10 @@ import kotlinx.coroutines.launch
 /**
  * Glue between the network session, the MCU state machine and the UI.
  * One instance per process (owned by [UltraDawApp]).
+ *
+ * Connection policy: the Mac the user last connected to is remembered and invited
+ * automatically (with back-off) whenever we're not connected. If none is remembered and
+ * exactly one Mac is on the network, that one is used. The Mac can still invite us too.
  */
 class SurfaceController(context: Context) {
     private val scope = CoroutineScope(
@@ -38,9 +45,18 @@ class SurfaceController(context: Context) {
 
     private val session = AppleMidiSession(SESSION_NAME, scope, onMidi = ::onMidi)
     val connection: StateFlow<SessionState> = session.state
+    val lastFailure: StateFlow<InviteFailure?> = session.lastFailure
 
     private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("ultradaw", Context.MODE_PRIVATE)
     private val bonjour = BonjourAdvertiser(appContext)
+    private val browser = BonjourBrowser(appContext, SESSION_NAME)
+    /** Network MIDI sessions found on the LAN (Macs). */
+    val macs: StateFlow<List<MidiService>> = browser.services
+
+    private val _preferredMac = MutableStateFlow(prefs.getString(KEY_PREFERRED, null))
+    val preferredMac: StateFlow<String?> = _preferredMac
+
     private val wifiLock: WifiManager.WifiLock? =
         (appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
             ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "UltraDAW")
@@ -55,9 +71,11 @@ class SurfaceController(context: Context) {
         session.start()
         if (session.state.value is SessionState.Listening) {
             bonjour.register(SESSION_NAME, AppleMidiSession.DEFAULT_PORT)
+            browser.start()
         }
         jobs += scope.launch { meterDecay() }
         jobs += scope.launch { followConnection() }
+        jobs += scope.launch { autoConnect() }
     }
 
     fun stop() {
@@ -65,9 +83,16 @@ class SurfaceController(context: Context) {
         started = false
         jobs.forEach { it.cancel() }
         jobs.clear()
+        browser.stop()
         bonjour.unregister()
         session.stop()
         runCatching { wifiLock?.release() }
+    }
+
+    /** User picked a Mac: remember it and connect now. */
+    fun connectTo(mac: MidiService) {
+        remember(mac.name)
+        session.invite(mac.name, mac.host, mac.port)
     }
 
     // ---- UI → host ----
@@ -101,6 +126,37 @@ class SurfaceController(context: Context) {
 
     private fun hex(b: ByteArray) = b.joinToString(" ") { "%02X".format(it) }
 
+    // ---- connection management ----
+
+    private fun remember(name: String) {
+        if (_preferredMac.value == name) return
+        _preferredMac.value = name
+        prefs.edit().putString(KEY_PREFERRED, name).apply()
+    }
+
+    /** Which Mac to invite automatically, if any. */
+    private fun target(list: List<MidiService>): MidiService? {
+        val preferred = _preferredMac.value
+        return if (preferred != null) list.firstOrNull { it.name == preferred } else list.singleOrNull()
+    }
+
+    private suspend fun autoConnect() {
+        var failures = 0
+        var nextAttempt = 0L
+        while (scope.isActive) {
+            delay(1_000)
+            val st = session.state.value
+            if (st is SessionState.Connected) { failures = 0; nextAttempt = 0; continue }
+            if (st !is SessionState.Listening) continue // connecting, stopped or failed
+            val mac = target(browser.services.value) ?: continue
+            val now = System.currentTimeMillis()
+            if (now < nextAttempt) continue
+            session.invite(mac.name, mac.host, mac.port)
+            failures++
+            nextAttempt = now + (3_000L shl (failures - 1).coerceAtMost(4)).coerceAtMost(30_000L)
+        }
+    }
+
     /** Fresh surface on every new connection; low-latency Wi-Fi only while connected. */
     private suspend fun followConnection() {
         var wasConnected = false
@@ -109,6 +165,9 @@ class SurfaceController(context: Context) {
             if (connected && !wasConnected) {
                 synchronized(lock) { _surface.value = SurfaceState() }
                 runCatching { wifiLock?.acquire() }
+                // If the Mac invited us, remember it so we can reconnect on our own next time.
+                val addr = (st as SessionState.Connected).address
+                browser.services.value.firstOrNull { it.host == addr }?.let { remember(it.name) }
             } else if (!connected && wasConnected) {
                 synchronized(lock) { _surface.update { it.copy(hostOnline = false) } }
                 runCatching { wifiLock?.release() }
@@ -134,5 +193,6 @@ class SurfaceController(context: Context) {
         private const val METER_DECAY_MS = 150L
         private const val TAG = "UltraDAW"
         private const val TRACE = "UltraDAW/MIDI"
+        private const val KEY_PREFERRED = "preferred_mac"
     }
 }

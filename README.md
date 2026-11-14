@@ -4,7 +4,7 @@ A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineO
 
 > Independent project, not affiliated with Sanytron or Apple.
 
-## Features (v0.1)
+## Features (v0.2)
 - **Transport:**
   - Rewind, FF, Stop, Play, Record, Cycle, Click and Marker;
   - Bank ◀▶;
@@ -17,16 +17,19 @@ A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineO
   - Mute, Solo, Rec and Select buttons;
   - Master fader;
   - Bank and Channel ◀▶.
-- Bonjour advertisement as `UltraDAW`, so it appears in **Audio MIDI Setup → Network**.
+- Automatic connection: discovers the Mac's Network MIDI session via Bonjour, invites it and reconnects with back-off. It also accepts invitations from the Mac.
 
-## Connecting to Logic Pro
-1. CoreBAR and Mac on the same network. Open UltraDAW on the CoreBAR.
-2. Mac: **Audio MIDI Setup → Window → Show MIDI Studio → Network** (the globe icon).
-   - In **My Sessions**, create a session (+) and tick it as enabled.
-   - In **Directory**, select `UltraDAW` and click **Connect**.
-3. Logic Pro: **Logic Pro → Control Surfaces → Setup… → New → Install… → Mackie Control → Add**.
-   - In the inspector, set **Output Port** and **Input Port** to the network session.
-4. The dot in UltraDAW turns green ("DAW") once Logic completes the Mackie handshake.
+## Connecting to Logic Pro (one-time setup)
+1. **Mac → Audio MIDI Setup → Window → Show MIDI Studio → Network** (globe icon):
+   - create a session under **My Sessions** and tick **Enabled**;
+   - set **Who may connect to me** to **Anyone**.
+2. **Logic Pro → Control Surfaces → Setup… → New → Install… → Mackie Control → Add**.
+   - Set **Output Port** and **Input Port** to the network session (shown as "Network").
+3. Open UltraDAW on the CoreBAR. It finds the Mac via Bonjour, connects on its own and turns green ("DAW") once Logic completes the Mackie handshake.
+
+After that, UltraDAW reconnects automatically: after a reboot, when the Mac wakes up or when the app restarts. If there are several Macs on the network, tap the one you want on the connect screen and UltraDAW remembers it.
+
+You can still connect from the Mac instead: select `UltraDAW` under *Sessions and Directories* and press **Connect**.
 
 ## Build
 Requirements: Android Studio, which provides the JDK; Android SDK platform 36.
@@ -56,6 +59,6 @@ Bonjour does not cross the emulator's NAT. In Audio MIDI Setup → Network → D
 - `ui/`: Compose screens designed for 1424×280.
 
 ## Known limitations
-- Single Mac session at a time. The app only answers invitations; it never initiates them.
+- Single Mac session at a time.
 - No V-Pots, Flip, Send/Pan assignments or jog wheel yet.
 - The UltraBar's physical KnobKey does not reach third-party apps in LineOS 1.0.9, so all control is on the touchscreen.

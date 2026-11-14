@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.elionaz.ultradaw.SurfaceController
 import com.elionaz.ultradaw.mcu.SurfaceState
+import com.elionaz.ultradaw.rtpmidi.InviteFailure
+import com.elionaz.ultradaw.rtpmidi.MidiService
 import com.elionaz.ultradaw.rtpmidi.SessionState
 
 @Composable
@@ -47,11 +49,15 @@ fun UltraDawScreen(controller: SurfaceController) {
         }
     }
 
+    val macs by controller.macs.collectAsStateWithLifecycle()
+    val preferred by controller.preferredMac.collectAsStateWithLifecycle()
+    val failure by controller.lastFailure.collectAsStateWithLifecycle()
+
     Row(Modifier.fillMaxSize().background(Palette.Background)) {
         Rail(tab, { tab = it }, connection, surface, Modifier.width(84.dp).fillMaxHeight())
         Box(Modifier.weight(1f).fillMaxHeight()) {
             if (connection !is SessionState.Connected) {
-                ConnectHelp(connection)
+                ConnectScreen(connection, macs, preferred, failure, controller::connectTo)
             } else when (tab) {
                 0 -> TransportScreen(surface, actions::press)
                 else -> MixerScreen(surface, actions)
@@ -90,6 +96,7 @@ private fun Rail(
             connection is SessionState.Connected && surface.hostOnline -> Palette.Play to "DAW"
             connection is SessionState.Connected -> Palette.Cycle to "MIDI"
             connection is SessionState.Failed -> Palette.Record to "Error"
+            connection is SessionState.Connecting -> Palette.Cycle to "Link…"
             else -> Palette.TextDim to "Idle"
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -100,25 +107,60 @@ private fun Rail(
 }
 
 @Composable
-private fun ConnectHelp(connection: SessionState) {
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.Center,
+private fun ConnectScreen(
+    connection: SessionState,
+    macs: List<MidiService>,
+    preferred: String?,
+    failure: InviteFailure?,
+    onPick: (MidiService) -> Unit,
+) {
+    val title = when {
+        connection is SessionState.Failed -> connection.message
+        connection is SessionState.Connecting -> "Connecting to ${connection.peerName}…"
+        failure == InviteFailure.REJECTED -> "Your Mac refused the connection"
+        macs.isEmpty() -> "Looking for your Mac…"
+        else -> "Choose your Mac"
+    }
+    val help = when {
+        failure == InviteFailure.REJECTED || failure == InviteFailure.NO_ANSWER ->
+            "On the Mac: Audio MIDI Setup → Network → select your session, tick Enabled and set\n" +
+                "“Who may connect to me” to Anyone. UltraDAW keeps retrying on its own."
+        macs.isEmpty() ->
+            "On the Mac: Audio MIDI Setup → Window → Show MIDI Studio → Network → create a session and tick Enabled.\n" +
+                "In Logic Pro: Control Surfaces → Setup → New → Install → Mackie Control, ports = the network session."
+        else -> "UltraDAW reconnects to the Mac you pick automatically from now on."
+    }
+    Row(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        Text(
-            when (connection) {
-                is SessionState.Failed -> connection.message
-                else -> "Waiting for your Mac…"
-            },
-            color = Palette.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            "1. On the Mac open Audio MIDI Setup → Window → Show MIDI Studio → Network.\n" +
-                "2. Select “${SurfaceController.SESSION_NAME}” in Directory and press Connect.\n" +
-                "3. In your DAW add a Mackie Control surface using the network session ports.\n" +
-                "    Logic Pro: Control Surfaces → Setup → New → Install → Mackie Control.",
-            color = Palette.TextDim, fontSize = 14.sp, lineHeight = 20.sp, textAlign = TextAlign.Start,
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Palette.Text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                help, color = Palette.TextDim, fontSize = 14.sp, lineHeight = 20.sp, textAlign = TextAlign.Start,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (macs.isNotEmpty()) {
+            Column(Modifier.width(320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                macs.take(3).forEach { mac ->
+                    val isPreferred = mac.name == preferred
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isPreferred) Palette.PanelRaised else Palette.Panel)
+                            .clickable(enabled = connection !is SessionState.Connecting) { onPick(mac) }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(if (isPreferred) Palette.Play else Palette.TextDim))
+                            Text("  ${mac.name}", color = Palette.Text, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
