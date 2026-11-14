@@ -80,6 +80,11 @@ class McuTest {
         assertEquals(Led.OFF, s2.led(Mcu.PLAY))
     }
 
+    @Test fun `unsolicited host connection query matches the device query reply`() {
+        val reply = apply(bytes(0xF0, 0x00, 0x00, 0x66, 0x14, 0x00, 0xF7)).replies.single()
+        assertEquals(hex(reply), hex(parser.hostConnectionQuery()))
+    }
+
     @Test fun `version reply starts with V`() {
         val r = apply(bytes(0xF0, 0x00, 0x00, 0x66, 0x14, 0x13, 0x00, 0xF7))
         assertEquals("F0 00 00 66 14 14 56 31 2E 30 30 F7", hex(r.replies.single()))

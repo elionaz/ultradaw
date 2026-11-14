@@ -13,6 +13,13 @@ class McuParser(
 
     data class Result(val state: SurfaceState, val replies: List<ByteArray> = emptyList())
 
+    /**
+     * Unsolicited "host connection query", as a hardware MCU sends at power-up. Logic answers
+     * by re-initialising the surface (LCD, LEDs, faders), which it does not do by itself when
+     * a network session reconnects.
+     */
+    fun hostConnectionQuery(): ByteArray = sysex(Mcu.SYSEX_HOST_QUERY, serial + CHALLENGE)
+
     fun handle(state: SurfaceState, msg: ByteArray): Result {
         if (msg.isEmpty()) return Result(state)
         val status = msg[0].toInt() and 0xFF
