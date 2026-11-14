@@ -13,6 +13,12 @@ A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineO
 
 > Independent project, not affiliated with Sanytron or Apple.
 
+![Transport: timecode and transport controls](store/screenshots/transport.png)
+
+![Mixer: 8 channel strips with names, faders, meters and mute/solo/rec](store/screenshots/mixer.png)
+
+<sub>Screenshots from a real CoreBAR (demo session with generic track names). A 16-second silent demo video is in [`store/screenshots/demo.mp4`](store/screenshots/demo.mp4).</sub>
+
 ## Features (v0.2)
 - **Transport:**
   - Rewind, FF, Stop, Play, Record, Cycle, Click and Marker;
