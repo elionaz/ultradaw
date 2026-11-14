@@ -34,6 +34,30 @@ A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineO
   - Bank and Channel ◀▶.
 - Automatic connection: discovers the Mac's Network MIDI session via Bonjour, invites it and reconnects with back-off. It also accepts invitations from the Mac.
 
+## Install
+**From the UltraBar store:** coming soon, once Sanytron approves the listing.
+
+**From GitHub (sideload over the network):** you need a Mac on the same network as the bar.
+1. Download `UltraDAW-x.y.z.apk` from the [latest release](https://github.com/elionaz/ultradaw/releases/latest). You can check it against the `.sha256` file: `shasum -a 256 -c UltraDAW-x.y.z.apk.sha256`.
+2. On the bar: **Settings → System → Developer options** and enable **ADB over network** (it shows *WiFi ADB port 5555*).
+   - If **Developer options** is missing, open **Settings → About** and tap **Build number** 7 times.
+   - The bar's IP address is in **Settings → Network / Wi-Fi**.
+3. On the Mac:
+   ```sh
+   brew install android-platform-tools
+   adb connect <bar-ip>:5555
+   adb install -r UltraDAW-x.y.z.apk
+   ```
+4. Open **UltraDAW** on the bar and do the one-time setup below.
+
+Notes:
+- **Update:** run `adb install -r` again with the new APK. Your settings are kept.
+- **Uninstall:** `adb uninstall com.elionaz.ultradaw`.
+- GitHub and store builds share the same signature, so you can move from one to the other without uninstalling.
+- You can switch ADB over network off again when you are done.
+- File-manager apps on the bar (e.g. UltraBar Files) can't install APKs on current LineOS, so use adb.
+- Requires LineOS on Android 10 (API 29) or later.
+
 ## Connecting to Logic Pro (one-time setup)
 1. **Mac → Audio MIDI Setup → Window → Show MIDI Studio → Network** (globe icon):
    - create a session under **My Sessions** and tick **Enabled**;
