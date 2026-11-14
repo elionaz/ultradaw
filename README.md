@@ -17,7 +17,7 @@ A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineO
 
 ![Mixer: 8 channel strips with names, faders, meters and mute/solo/rec](store/screenshots/mixer.png)
 
-<sub>Screenshots from a real CoreBAR connected to Logic Pro. A 16-second demo video is in [`store/screenshots/demo.mp4`](store/screenshots/demo.mp4).</sub>
+<sub>Screenshots from a real CoreBAR (demo session with generic track names). A 16-second silent demo video is in [`store/screenshots/demo.mp4`](store/screenshots/demo.mp4).</sub>
 
 ## Features (v0.2)
 - **Transport:**

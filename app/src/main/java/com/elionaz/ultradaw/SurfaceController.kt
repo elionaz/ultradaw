@@ -157,22 +157,28 @@ class SurfaceController(context: Context) {
         }
     }
 
-    /** Fresh surface on every new connection; low-latency Wi-Fi only while connected. */
+    /**
+     * Fresh surface whenever we connect to a host — including when a different host takes over
+     * an existing connection, so no LEDs/names/faders leak from the previous one.
+     * Low-latency Wi-Fi only while connected.
+     */
     private suspend fun followConnection() {
-        var wasConnected = false
+        var current: Pair<String, java.net.InetAddress?>? = null
         session.state.collect { st ->
-            val connected = st is SessionState.Connected
-            if (connected && !wasConnected) {
-                synchronized(lock) { _surface.value = SurfaceState() }
-                runCatching { wifiLock?.acquire() }
-                // If the Mac invited us, remember it so we can reconnect on our own next time.
-                val addr = (st as SessionState.Connected).address
-                browser.services.value.firstOrNull { it.host == addr }?.let { remember(it.name) }
-            } else if (!connected && wasConnected) {
+            if (st is SessionState.Connected) {
+                val host = st.peerName to st.address
+                if (host != current) {
+                    synchronized(lock) { _surface.value = SurfaceState() }
+                    runCatching { wifiLock?.acquire() }
+                    // If the Mac invited us, remember it so we can reconnect on our own next time.
+                    browser.services.value.firstOrNull { it.host == st.address }?.let { remember(it.name) }
+                    current = host
+                }
+            } else if (current != null) {
                 synchronized(lock) { _surface.update { it.copy(hostOnline = false) } }
                 runCatching { wifiLock?.release() }
+                current = null
             }
-            wasConnected = connected
         }
     }
 
