@@ -1,6 +1,15 @@
-# UltraDAW
+<p align="center">
+  <img src="store/icon-512.png" alt="UltraDAW icon" width="128" height="128">
+</p>
 
-A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineOS / Android 14). It shows transport, timecode and an 8-channel mixer, and talks to Logic Pro, or any other DAW that supports Mackie Control, over **macOS Network MIDI (RTP-MIDI)**. Nothing needs to be installed on the Mac.
+<h1 align="center">UltraDAW</h1>
+
+<p align="center">
+  <a href="https://github.com/elionaz/ultradaw/actions/workflows/ci.yml"><img src="https://github.com/elionaz/ultradaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
+
+A Mackie Control surface for the **UltraBar X CoreBAR** screen (1424×280, LineOS / Android 10). It shows transport, timecode and an 8-channel mixer, and talks to Logic Pro, or any other DAW that supports Mackie Control, over **macOS Network MIDI (RTP-MIDI)**. Nothing needs to be installed on the Mac.
 
 > Independent project, not affiliated with Sanytron or Apple.
 
@@ -41,7 +50,7 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ```
 
 ### Test on the emulator (without a CoreBAR)
-Create an AVD with a 1424×280 screen at density 192 (the CoreBAR size), e.g. `UltraBar_CoreBAR`.
+Create an AVD with a 1424×280 screen at density 160 (the CoreBAR size), e.g. `UltraBar_CoreBAR`.
 
 ```sh
 ~/Library/Android/sdk/emulator/emulator -avd UltraBar_CoreBAR &
@@ -62,3 +71,6 @@ Bonjour does not cross the emulator's NAT. In Audio MIDI Setup → Network → D
 - Single Mac session at a time.
 - No V-Pots, Flip, Send/Pan assignments or jog wheel yet.
 - The UltraBar's physical KnobKey does not reach third-party apps in LineOS 1.0.9, so all control is on the touchscreen.
+
+## Contributing
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md): every change goes through a pull request, must pass CI and be verified with a DAW.

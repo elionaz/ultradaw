@@ -1,0 +1,46 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: UltraDAW version
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: daw
+    attributes:
+      label: DAW and version
+      placeholder: "Logic Pro 12.1"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Running on
+      options:
+        - Real CoreBAR
+        - Emulator
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: MIDI trace or logs (optional)
+      description: From a debug build, `adb logcat -s UltraDAW/MIDI UltraDAW/Session`
+      render: text
