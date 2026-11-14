@@ -14,8 +14,8 @@ android {
         applicationId = "com.elionaz.ultradaw"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
     }
 
     // Release signing is read from keystore.properties (gitignored) at the project root.
